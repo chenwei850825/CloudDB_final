@@ -12,7 +12,9 @@ import org.vanilladb.core.storage.tx.Transaction;
 import org.vanilladb.core.storage.tx.concurrency.LockAbortException;
 
 public abstract class BasicStoredProcedure<H extends StoredProcedureParamHelper> implements StoredProcedure {
-	public static double[] ids = new double[100000];
+	public static double[] ids = new double[1000000];
+	public static String[] idsSql = new String[1000000];
+	public static boolean firstStart = true;
 	private static Logger logger = Logger.getLogger(BasicStoredProcedure.class
 			.getName());
 	
@@ -22,7 +24,7 @@ public abstract class BasicStoredProcedure<H extends StoredProcedureParamHelper>
 	public BasicStoredProcedure(H helper) {
 		if (helper == null)
 			throw new IllegalArgumentException("paramHelper should not be null");
-		
+
 		paramHelper = helper;
 	}
 	
@@ -59,6 +61,10 @@ public abstract class BasicStoredProcedure<H extends StoredProcedureParamHelper>
 		}
 
 		return paramHelper.createResultSet();
+	}
+	
+	public void stoppedTask() {
+		
 	}
 	
 	protected abstract void executeSql();

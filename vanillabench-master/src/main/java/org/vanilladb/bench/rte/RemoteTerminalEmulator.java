@@ -1,11 +1,17 @@
 package org.vanilladb.bench.rte;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.vanilladb.bench.StatisticMgr;
 import org.vanilladb.bench.TransactionType;
 import org.vanilladb.bench.TxnResultSet;
 import org.vanilladb.bench.remote.SutConnection;
+import org.vanilladb.bench.server.procedure.BasicStoredProcedure;
+
 
 public abstract class RemoteTerminalEmulator extends Thread {
 
@@ -26,11 +32,15 @@ public abstract class RemoteTerminalEmulator extends Thread {
 
 	@Override
 	public void run() {
+		
+		this.conn.started();
 		while (!stopBenchmark) {
 			TxnResultSet rs = executeTxnCycle(conn);
 			if (!isWarmingUp)
 				statMgr.processTxnResult(rs);
 		}
+		this.conn.stopped();
+
 	}
 
 	public void startRecordStatistic() {

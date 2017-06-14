@@ -38,10 +38,12 @@ class RemoteConnectionImpl extends UnicastRemoteObject implements
 		super();
 	}
 
+	private int pid;
 	@Override
 	public SpResultSet callStoredProc(int pid, Object... pars)
 			throws RemoteException {
 		try {
+			this.pid = pid;
 			StoredProcedure sp = VanillaDb.spFactory().getStroredProcedure(pid);
 			sp.prepare(pars);
 			return sp.execute();
@@ -50,4 +52,22 @@ class RemoteConnectionImpl extends UnicastRemoteObject implements
 			throw new RemoteException(e.getMessage());
 		}
 	}
+
+	@Override
+	public void stopped() {
+		Integer[] pars = new Integer[100];
+		StoredProcedure sp = VanillaDb.spFactory().getStroredProcedure(this.pid);
+		pars[99] = 999;
+		sp.prepare(pars);
+	}
+	
+	@Override
+	public void started() {
+		Integer[] pars = new Integer[100];
+		StoredProcedure sp = VanillaDb.spFactory().getStroredProcedure(4);
+		pars[99] = -999;
+		sp.prepare(pars);
+	}
+	
+	
 }

@@ -15,6 +15,8 @@
  ******************************************************************************/
 package org.vanilladb.core.remote.storedprocedure;
 
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 

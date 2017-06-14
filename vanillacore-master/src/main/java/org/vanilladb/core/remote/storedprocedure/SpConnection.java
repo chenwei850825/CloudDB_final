@@ -15,6 +15,7 @@
  ******************************************************************************/
 package org.vanilladb.core.remote.storedprocedure;
 
+import java.rmi.RemoteException;
 import java.sql.SQLException;
 
 public class SpConnection {
@@ -31,5 +32,13 @@ public class SpConnection {
 		} catch (Exception e) {
 			throw new SQLException(e);
 		}
+	}
+	
+	public void stopped() throws RemoteException{
+		this.conn.stopped();
+	}
+	
+	public void started() throws RemoteException{
+		this.conn.started();
 	}
 }

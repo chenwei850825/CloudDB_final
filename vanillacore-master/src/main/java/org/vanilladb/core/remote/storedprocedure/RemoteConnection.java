@@ -25,4 +25,6 @@ public interface RemoteConnection extends Remote {
 
 	SpResultSet callStoredProc(int pid, Object... pars) throws RemoteException;
 
+	void stopped()throws RemoteException;
+	void started()throws RemoteException;
 }

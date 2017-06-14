@@ -6,4 +6,6 @@ public interface SutConnection {
 
 	SutResultSet callStoredProc(int pid, Object... pars) throws SQLException;
 
+	void stopped();
+	void started();
 }

@@ -41,7 +41,7 @@ public abstract class StoredProcedureParamHelper {
 
 			@Override
 			public void prepareParameters(Object... pars) {
-				// do nothing
+				
 			}
 
 			@Override

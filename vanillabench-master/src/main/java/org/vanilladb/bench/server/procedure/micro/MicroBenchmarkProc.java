@@ -1,5 +1,14 @@
 package org.vanilladb.bench.server.procedure.micro;
 
+import java.awt.List;
+import java.io.BufferedReader;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
+
 import org.vanilladb.bench.server.param.micro.MicroBenchmarkProcParamHelper;
 import org.vanilladb.bench.server.procedure.BasicStoredProcedure;
 import org.vanilladb.core.query.algebra.Plan;
@@ -12,37 +21,57 @@ public class MicroBenchmarkProc extends BasicStoredProcedure<MicroBenchmarkProcP
 		super(new MicroBenchmarkProcParamHelper());
 	}
 
+	public static void stop(){
+		System.out.println("stop");
+		try {
+			PrintWriter writer = new PrintWriter("stickies.txt", "UTF-8");
+
+		for(int i = 0 ; i < 100000 ; i++){		
+			if(BasicStoredProcedure.ids[i] != 0){
+				    writer.println(i +  " " + BasicStoredProcedure.ids[i]);
+			}
+		}
+	    writer.close();
+		} catch (FileNotFoundException e1) {
+			e1.printStackTrace();
+		} catch (UnsupportedEncodingException e1) {
+			e1.printStackTrace();
+		}
+	}
+	
+	
+	public static void start(){
+	    BufferedReader br = null;
+	    try{
+	      br = new BufferedReader(new FileReader("stickies.txt"));
+	      String in = null;
+	      while((in = br.readLine()) != null){
+	    	  String[] lastData = in.split(" ");
+	    	  BasicStoredProcedure.ids[Integer.valueOf(lastData[0])] = Double.valueOf(lastData[1]);
+	      }
+	    }catch(IOException ioe){
+	      
+	    }finally{
+	     
+	    }    
+	    
+	    
+	}
+	
 	@Override
 	protected void executeSql() {
 
-		for (int idx = 0; idx < paramHelper.getReadCount(); idx++) {
-			int iid = paramHelper.getReadItemId(idx);
-
-			String sql = "SELECT i_name, i_price FROM item WHERE i_id = " + iid;
-			Plan p = VanillaDb.newPlanner().createQueryPlan(sql, tx);
-			Scan s = p.open();
-			s.beforeFirst();
-			if (s.next()) {
-				String name = (String) s.getVal("i_name").asJavaVal();
-				double price = (Double) s.getVal("i_price").asJavaVal();
-
-				paramHelper.setItemName(name, idx);
-				paramHelper.setItemPrice(price, idx);
-			} else
-				throw new RuntimeException("Cloud not find item record with i_id = " + iid);
-
-			s.close();
+		if(paramHelper.isStopped() == true){
+			System.out.println("stopped");
 		}
-		
+
 		for (int idx = 0; idx < paramHelper.getReadCount(); idx++) {
 			int iid = paramHelper.getReadItemId(idx);
 			
-			if(ids[iid] != 0){
-
-				String sql = "UPDATE item SET i_price = " + ids[iid] + " WHERE i_id =" + iid;
+			if(BasicStoredProcedure.ids[iid] != 0){
+				String sql = "UPDATE item SET i_price = " + BasicStoredProcedure.ids[iid] + " WHERE i_id =" + iid;
 				VanillaDb.newPlanner().executeUpdate(sql, tx);
-				ids[iid] = 0;
-
+				BasicStoredProcedure.ids[iid] = 0;
 			}
 
 			String sql = "SELECT i_name, i_price FROM item WHERE i_id = " + iid;
@@ -65,7 +94,10 @@ public class MicroBenchmarkProc extends BasicStoredProcedure<MicroBenchmarkProcP
 			int iid = paramHelper.getWriteItemId(idx);
 			double newPrice = paramHelper.getNewItemPrice(idx);
 			
-			ids[iid]=newPrice;
+			BasicStoredProcedure.ids[iid]=newPrice;
+			//System.out.println(BasicStoredProcedure.ids.toString() );
+			
+
 		}
 	
 	}

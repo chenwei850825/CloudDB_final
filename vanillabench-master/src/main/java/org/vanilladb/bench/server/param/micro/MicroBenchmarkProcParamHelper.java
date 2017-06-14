@@ -1,5 +1,6 @@
 package org.vanilladb.bench.server.param.micro;
 
+import org.vanilladb.bench.server.procedure.micro.MicroBenchmarkProc;
 import org.vanilladb.core.remote.storedprocedure.SpResultSet;
 import org.vanilladb.core.sql.DoubleConstant;
 import org.vanilladb.core.sql.IntegerConstant;
@@ -18,6 +19,9 @@ public class MicroBenchmarkProcParamHelper extends StoredProcedureParamHelper {
 	private double[] newItemPrice;
 	private String[] itemName;
 	private double[] itemPrice;
+	private boolean isStopped = false;
+
+	
 
 	public int getReadCount() {
 		return readCount;
@@ -47,6 +51,14 @@ public class MicroBenchmarkProcParamHelper extends StoredProcedureParamHelper {
 		itemPrice[idx] = d;
 	}
 
+	public void setStopped(boolean isStopped) {
+		this.isStopped = isStopped;
+		//System.out.println(this.isStopped );
+	}
+	public boolean isStopped() {
+		return isStopped;
+	}
+	
 	@Override
 	public void prepareParameters(Object... pars) {
 
@@ -55,6 +67,15 @@ public class MicroBenchmarkProcParamHelper extends StoredProcedureParamHelper {
 
 		int indexCnt = 0;
 
+		if( pars.length == 100 ){
+			if((int)pars[99] == 999)
+				MicroBenchmarkProc.stop();
+			else if((int)pars[99] == -999){
+				MicroBenchmarkProc.start();
+			}
+			return;
+		}
+		
 		readCount = (Integer) pars[indexCnt++];
 		readItemId = new int[readCount];
 		itemName = new String[readCount];
@@ -75,6 +96,7 @@ public class MicroBenchmarkProcParamHelper extends StoredProcedureParamHelper {
 
 		if (writeCount == 0)
 			setReadOnly(true);
+	
 	}
 
 	@Override
@@ -107,5 +129,7 @@ public class MicroBenchmarkProcParamHelper extends StoredProcedureParamHelper {
 
 		return new SpResultSet(sch, rec);
 	}
+	
+
 
 }
