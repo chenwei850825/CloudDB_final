@@ -12,6 +12,7 @@ import org.vanilladb.core.storage.tx.Transaction;
 import org.vanilladb.core.storage.tx.concurrency.LockAbortException;
 
 public abstract class BasicStoredProcedure<H extends StoredProcedureParamHelper> implements StoredProcedure {
+	public static double[] ids = new double[100000];
 	private static Logger logger = Logger.getLogger(BasicStoredProcedure.class
 			.getName());
 	
@@ -43,6 +44,7 @@ public abstract class BasicStoredProcedure<H extends StoredProcedureParamHelper>
 			
 			// The transaction finishes normally
 			tx.commit();
+			
 			paramHelper.setCommitted(true);
 			
 		} catch (LockAbortException lockAbortEx) {

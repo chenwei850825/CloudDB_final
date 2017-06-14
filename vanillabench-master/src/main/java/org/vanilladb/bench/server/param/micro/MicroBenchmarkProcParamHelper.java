@@ -63,7 +63,9 @@ public class MicroBenchmarkProcParamHelper extends StoredProcedureParamHelper {
 		for (int i = 0; i < readCount; i++)
 			readItemId[i] = (Integer) pars[indexCnt++];
 
+		
 		writeCount = (Integer) pars[indexCnt++];
+		//System.out.println("read: " + readCount + " || write: " + writeCount );
 		writeItemId = new int[writeCount];
 		for (int i = 0; i < writeCount; i++)
 			writeItemId[i] = (Integer) pars[indexCnt++];
