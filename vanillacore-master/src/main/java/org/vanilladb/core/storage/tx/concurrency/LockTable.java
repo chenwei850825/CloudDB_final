@@ -1,32 +1,16 @@
-/*******************************************************************************
- * Copyright 2016 vanilladb.org
- * 
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * 
- *   http://www.apache.org/licenses/LICENSE-2.0
- * 
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- ******************************************************************************/
 package org.vanilladb.core.storage.tx.concurrency;
 
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-
-import org.vanilladb.core.server.VanillaDb;
-import org.vanilladb.core.server.task.Task;
-import org.vanilladb.core.util.CoreProperties;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Checks the compatibility of locking requests on a single item (e.g., file,
@@ -42,133 +26,71 @@ import org.vanilladb.core.util.CoreProperties;
  * </p>
  */
 class LockTable {
+	private static Logger logger = Logger.getLogger(LockTable.class.getName());
+	
 	private static final long MAX_TIME;
 	private static final long EPSILON;
 	final static int IS_LOCK = 0, IX_LOCK = 1, S_LOCK = 2, SIX_LOCK = 3,
 			X_LOCK = 4;
 
 	static {
-		MAX_TIME = CoreProperties.getLoader().getPropertyAsLong(
-				LockTable.class.getName() + ".MAX_TIME", 10000);
-		EPSILON = CoreProperties.getLoader().getPropertyAsLong(LockTable.class.getName()
-				+ ".EPSILON", 50);
+		String prop = System.getProperty(LockTable.class.getName()
+				+ ".MAX_TIME");
+		MAX_TIME = (prop == null ? 10000 : Long.parseLong(prop.trim()));
+		prop = System.getProperty(LockTable.class.getName() + ".EPSILON");
+		EPSILON = (prop == null ? 50 : Long.parseLong(prop.trim()));
 	}
 
 	class Lockers {
-		Set<Long> sLockers, ixLockers, isLockers, requestSet;
+		Set<Long> sLockers, ixLockers, isLockers;
 		// only one tx can hold xLock(sixLock) on single item
 		long sixLocker, xLocker;
-		static final long NONE = -1; // for sixLocker, xLocker
 
 		Lockers() {
 			sLockers = new HashSet<Long>();
 			ixLockers = new HashSet<Long>();
 			isLockers = new HashSet<Long>();
-			sixLocker = NONE;
-			xLocker = NONE;
-			requestSet = new HashSet<Long>();
-		}
-		
-		@Override
-		public String toString() {
-			return "S: " + sLockers + ",IX: " + ixLockers + ",IS: " + isLockers
-					+ ",SIX: " + sixLocker + ",X: " + xLocker + ", request set: " + requestSet;
-		}
-	}
-
-	class LocktableNotifier extends Task {
-
-		@Override
-		public void run() {
-			while (true) {
-				try {
-					Long txNum = toBeNotified.take();
-					Object anchor = txWaitMap.get(txNum);
-
-					if (anchor != null) {
-						synchronized (anchor) {
-							anchor.notifyAll();
-						}
-
-					}
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-			}
+			sixLocker = -1; // -1 means none
+			xLocker = -1;
 		}
 	}
 
 	private Map<Object, Lockers> lockerMap = new HashMap<Object, Lockers>();
-	private Map<Long, Set<Object>> lockByMap = new ConcurrentHashMap<Long, Set<Object>>();
-	private Set<Long> txnsToBeAborted = Collections
-			.synchronizedSet(new HashSet<Long>());
-	private Map<Long, Object> txWaitMap = new ConcurrentHashMap<Long, Object>();
-	private BlockingQueue<Long> toBeNotified = new ArrayBlockingQueue<Long>(
-			1000);
-	private final Object anchors[] = new Object[1009];
+	
+	private CopyOnWriteArrayList<Long> T3LockedList = new CopyOnWriteArrayList<Long>();
+	
+	public void registerT3LockedList(long txNum)
+	{
+		if(T3LockedList.contains(txNum))
+			return;
+		T3LockedList.add(txNum);
+		//logger.warning(txNum + "in T3LockedList");
+//		Iterator<Long> it = T3LockedList.iterator();
+//        while (it.hasNext()) {
+//        	logger.warning("contain  "+it.next());
+//        }
+//        logger.warning("registerT3LockedList  ");
+	}
+	
+	public void leaveT3LockedList(long txNum)
+	{
+//		Iterator<Long> it = T3LockedList.iterator();
+//        while (it.hasNext()) {
+//        	logger.warning("contain  "+it.next());
+//        }
 
+		if(!T3LockedList.contains(txNum))
+		{
+			logger.warning(txNum + " not in T3LockedList but call leave");
+			return ;
+		}
+		//logger.warning(txNum + "leave T3LockedList");
+		T3LockedList.remove(txNum);
+	}
+	
 	public LockTable() {
-		for (int i = 0; i < anchors.length; ++i) {
-			anchors[i] = new Object();
-		}
-		VanillaDb.taskMgr().runTask(new LocktableNotifier());
-	}
-
-	private Object getAnchor(Object o) {
-		int code = o.hashCode() % anchors.length;
-		if (code < 0) {
-			code += anchors.length;
-		}
-		return anchors[code];
-	}
-
-	private void avoidDeadlock(Lockers lks, long txNum, int lockType)
-			throws LockAbortException {
-		// IS_LOCK = 0, IX_LOCK = 1, S_LOCK = 2, SIX_LOCK = 3, X_LOCK = 4
-
-		if (txnsToBeAborted.contains(txNum))
-			throw new LockAbortException("abort tx." + txNum + " for preventing deadlock");
-
-		if (lockType == IX_LOCK || lockType == SIX_LOCK || lockType == X_LOCK) {
-			for (Long tx : lks.sLockers) {
-				if (tx > txNum) {
-					txnsToBeAborted.add(tx);
-					if (!toBeNotified.contains(tx))
-						toBeNotified.add(tx);
-				}
-			}
-		}
-		if (lockType == S_LOCK || lockType == SIX_LOCK || lockType == X_LOCK) {
-			for (Long tx : lks.ixLockers) {
-				if (tx > txNum) {
-					txnsToBeAborted.add(tx);
-					if (!toBeNotified.contains(tx))
-						toBeNotified.add(tx);
-				}
-			}
-		}
-		if (lockType == X_LOCK) {
-			for (Long tx : lks.isLockers) {
-				if (tx > txNum) {
-					txnsToBeAborted.add(tx);
-					if (!toBeNotified.contains(tx))
-						toBeNotified.add(tx);
-				}
-			}
-		}
-		if (lockType == IX_LOCK || lockType == S_LOCK || lockType == SIX_LOCK
-				|| lockType == X_LOCK) {
-			if (lks.sixLocker > txNum) {
-				txnsToBeAborted.add(lks.sixLocker);
-				if (!toBeNotified.contains(lks.sixLocker))
-					toBeNotified.add(lks.sixLocker);
-			}
-		}
-		if (lks.xLocker > txNum) {
-			txnsToBeAborted.add(lks.xLocker);
-			if (!toBeNotified.contains(lks.xLocker))
-				toBeNotified.add(lks.xLocker);
-		}
+		if (logger.isLoggable(Level.INFO))
+			logger.info("LockTable for assignment 4 is ready");
 	}
 
 	/**
@@ -183,33 +105,47 @@ class LockTable {
 	 *            a transaction number
 	 * 
 	 */
-	void sLock(Object obj, long txNum) {
-		Object anchor = getAnchor(obj);
-		txWaitMap.put(txNum, anchor);
-		synchronized (anchor) {
-			Lockers lks = prepareLockers(obj);
+	synchronized void sLock(Object obj, long txNum) {
+		if (hasSLock(obj, txNum))
+			return;
 
-			if (hasSLock(lks, txNum))
-				return;
-
-			try {
-				long timestamp = System.currentTimeMillis();
-				while (!sLockable(lks, txNum) && !waitingTooLong(timestamp)) {
-					avoidDeadlock(lks, txNum, S_LOCK);
-					lks.requestSet.add(txNum);
-					
-					anchor.wait(MAX_TIME);
-					lks.requestSet.remove(txNum);
-				}
-				if (!sLockable(lks, txNum))
-					throw new LockAbortException();
-				lks.sLockers.add(txNum);
-				getObjectSet(txNum).add(obj);
-			} catch (InterruptedException e) {
-				throw new LockAbortException("abort tx." + txNum + " by interrupted");
-			}
+		try {
+			long timestamp = System.currentTimeMillis();
+			while (!sLockable(obj, txNum) && !waitingTooLong(timestamp))
+				wait(MAX_TIME);
+			if (!sLockable(obj, txNum))
+				throw new LockAbortException("deadlock detected");
+			prepareLockers(obj).sLockers.add(txNum);
+		} catch (InterruptedException e) {
+			throw new LockAbortException();
 		}
-		txWaitMap.remove(txNum);
+	}
+	
+	synchronized int T3sLock(Object obj, long txNum) {
+		//logger.warning(txNum+"in slock for" + obj.hashCode());
+		if (hasSLock(obj, txNum))
+			return 1;
+		//logger.warning(txNum + " T3sLock");
+		if(!sLockable(obj, txNum))
+		{
+			
+			long conflictTxNum = lockerMap.get(obj).xLocker; 
+			//logger.warning(txNum + " while " +conflictTxNum);
+			if(conflictTxNum<txNum)
+				return 0;
+			if(T3LockedList.contains(conflictTxNum))
+				return 2;
+		    releaseAll(conflictTxNum,false);  
+			
+		}
+		//logger.info(txNum+" slockable for"+obj.hashCode());
+		try {
+			prepareLockers(obj).sLockers.add(txNum);
+			return 1;
+		} catch (Exception e) {
+			throw new LockAbortException();	
+		}
+		
 	}
 
 	/**
@@ -224,33 +160,60 @@ class LockTable {
 	 *            a transaction number
 	 * 
 	 */
-	void xLock(Object obj, long txNum) {
-		Object anchor = getAnchor(obj);
-		txWaitMap.put(txNum, anchor);
-		synchronized (anchor) {
-			Lockers lks = prepareLockers(obj);
+	synchronized void xLock(Object obj, long txNum) {
+		if (hasXLock(obj, txNum))
+			return;
 
-			if (hasXLock(lks, txNum))
-				return;
-
-			try {
-				long timestamp = System.currentTimeMillis();
-				while (!xLockable(lks, txNum) && !waitingTooLong(timestamp)) {
-					avoidDeadlock(lks, txNum, X_LOCK);
-					lks.requestSet.add(txNum);
-					
-					anchor.wait(MAX_TIME);
-					lks.requestSet.remove(txNum);
-				}
-				if (!xLockable(lks, txNum))
-					throw new LockAbortException();
-				lks.xLocker = txNum;
-				getObjectSet(txNum).add(obj);
-			} catch (InterruptedException e) {
-				throw new LockAbortException();
-			}
+		try {
+			long timestamp = System.currentTimeMillis();
+			while (!xLockable(obj, txNum) && !waitingTooLong(timestamp))
+				wait(MAX_TIME);
+			if (!xLockable(obj, txNum))
+				throw new LockAbortException("deadlock detected");
+			prepareLockers(obj).xLocker = txNum;
+		} catch (InterruptedException e) {
+			throw new LockAbortException();
 		}
-		txWaitMap.remove(txNum);
+	}
+	
+	synchronized int T3xLock(Object obj, long txNum) {
+		//logger.warning(txNum+"in xlock for" + obj.hashCode());
+		if (hasXLock(obj, txNum))
+			return 1;
+
+		try {
+			if (!xLockable(obj, txNum))
+			{
+				ArrayList<Long> releaseList = new ArrayList<Long>();
+				long xlockConflictTxNum = lockerMap.get(obj).xLocker;
+				
+				if(xlockConflictTxNum!=-1&&(xlockConflictTxNum<txNum))
+					return 0;
+				if(xlockConflictTxNum!=-1&&!T3LockedList.contains(xlockConflictTxNum))
+					return 2;
+					//releaseList.add(xlockConflictTxNum);
+				
+				
+				Iterator<Long> iterator = lockerMap.get(obj).sLockers.iterator();
+				while (iterator.hasNext()){
+					long slockConflictTxNum =iterator.next();
+					if(slockConflictTxNum<txNum)
+						return 0;
+					if(T3LockedList.contains(slockConflictTxNum))
+						return 2;
+						//continue;  
+					releaseList.add(iterator.next());
+				}
+				for (Long num : releaseList) {
+					releaseAll(num,false);		
+				}   
+			}
+			//logger.info(txNum+" xlockable for"+obj.hashCode());
+			prepareLockers(obj).xLocker = txNum;
+			return 1;
+		} catch (Exception e) {
+			throw new LockAbortException();
+		}
 	}
 
 	/**
@@ -265,33 +228,21 @@ class LockTable {
 	 *            a transaction number
 	 * 
 	 */
-	void sixLock(Object obj, long txNum) {
-		Object anchor = getAnchor(obj);
-		txWaitMap.put(txNum, anchor);
-		synchronized (anchor) {
-			Lockers lks = prepareLockers(obj);
+	synchronized void sixLock(Object obj, long txNum) {
+		if (hasSixLock(obj, txNum))
+			return;
 
-			if (hasSixLock(lks, txNum))
-				return;
-
-			try {
-				long timestamp = System.currentTimeMillis();
-				while (!sixLockable(lks, txNum) && !waitingTooLong(timestamp)) {
-					avoidDeadlock(lks, txNum, SIX_LOCK);
-					lks.requestSet.add(txNum);
-					
-					anchor.wait(MAX_TIME);
-					lks.requestSet.remove(txNum);
-				}
-				if (!sixLockable(lks, txNum))
-					throw new LockAbortException();
-				lks.sixLocker = txNum;
-				getObjectSet(txNum).add(obj);
-			} catch (InterruptedException e) {
-				throw new LockAbortException();
-			}
+		try {
+			long timestamp = System.currentTimeMillis();
+			while (!sixLockable(obj, txNum) && !waitingTooLong(timestamp))
+				wait(MAX_TIME);
+			if (!sixLockable(obj, txNum))
+				throw new LockAbortException("deadlock detected");
+			prepareLockers(obj).sixLocker = txNum;
+		} catch (InterruptedException e) {
+			throw new LockAbortException();
 		}
-		txWaitMap.remove(txNum);
+
 	}
 
 	/**
@@ -305,31 +256,20 @@ class LockTable {
 	 * @param txNum
 	 *            a transaction number
 	 */
-	void isLock(Object obj, long txNum) {
-		Object anchor = getAnchor(obj);
-		txWaitMap.put(txNum, anchor);
-		synchronized (anchor) {
-			Lockers lks = prepareLockers(obj);
-			if (hasIsLock(lks, txNum))
-				return;
-			try {
-				long timestamp = System.currentTimeMillis();
-				while (!isLockable(lks, txNum) && !waitingTooLong(timestamp)) {
-					avoidDeadlock(lks, txNum, IS_LOCK);
-					lks.requestSet.add(txNum);
-					
-					anchor.wait(MAX_TIME);
-					lks.requestSet.remove(txNum);
-				}
-				if (!isLockable(lks, txNum))
-					throw new LockAbortException();
-				lks.isLockers.add(txNum);
-				getObjectSet(txNum).add(obj);
-			} catch (InterruptedException e) {
-				throw new LockAbortException();
-			}
+	synchronized void isLock(Object obj, long txNum) {
+		if (hasIsLock(obj, txNum))
+			return;
+		
+		try {
+			long timestamp = System.currentTimeMillis();
+			while (!isLockable(obj, txNum) && !waitingTooLong(timestamp))
+				wait(MAX_TIME);
+			if (!isLockable(obj, txNum))
+				throw new LockAbortException("deadlock detected");
+			prepareLockers(obj).isLockers.add(txNum);
+		} catch (InterruptedException e) {
+			throw new LockAbortException();
 		}
-		txWaitMap.remove(txNum);
 	}
 
 	/**
@@ -343,33 +283,20 @@ class LockTable {
 	 * @param txNum
 	 *            a transaction number
 	 */
-	void ixLock(Object obj, long txNum) {
-		Object anchor = getAnchor(obj);
-		txWaitMap.put(txNum, anchor);
-		synchronized (anchor) {
-			Lockers lks = prepareLockers(obj);
-
-			if (hasIxLock(lks, txNum))
-				return;
-
-			try {
-				long timestamp = System.currentTimeMillis();
-				while (!ixLockable(lks, txNum) && !waitingTooLong(timestamp)) {
-					avoidDeadlock(lks, txNum, IX_LOCK);
-					lks.requestSet.add(txNum);
-					
-					anchor.wait(MAX_TIME);
-					lks.requestSet.remove(txNum);
-				}
-				if (!ixLockable(lks, txNum))
-					throw new LockAbortException();
-				lks.ixLockers.add(txNum);
-				getObjectSet(txNum).add(obj);
-			} catch (InterruptedException e) {
-				throw new LockAbortException();
-			}
+	synchronized void ixLock(Object obj, long txNum) {
+		if (hasIxLock(obj, txNum))
+			return;
+		
+		try {
+			long timestamp = System.currentTimeMillis();
+			while (!ixLockable(obj, txNum) && !waitingTooLong(timestamp))
+				wait(MAX_TIME);
+			if (!ixLockable(obj, txNum))
+				throw new LockAbortException("deadlock detected");
+			prepareLockers(obj).ixLockers.add(txNum);
+		} catch (InterruptedException e) {
+			throw new LockAbortException();
 		}
-		txWaitMap.remove(txNum);
 	}
 
 	/**
@@ -384,31 +311,49 @@ class LockTable {
 	 * @param lockType
 	 *            the type of lock
 	 */
-	void release(Object obj, long txNum, int lockType) {
-		Object anchor = getAnchor(obj);
-		synchronized (anchor) {
-			Lockers lks = lockerMap.get(obj);
-			/*
-			 * In some situation, tx will release the lock of the object that
-			 * have been released.
-			 */
-			if (lks != null) {
-				releaseLock(lks, anchor, txNum, lockType);
-
-				// Check if this transaction have any other lock on this object
-				if (!hasSLock(lks, txNum) && !hasXLock(lks, txNum)
-						&& !hasSixLock(lks, txNum) && !hasIsLock(lks, txNum)
-						&& !hasIxLock(lks, txNum)) {
-					getObjectSet(txNum).remove(obj);
-
-					// Remove the locker, if there is no other transaction
-					// having it
-					if (!sLocked(lks) && !xLocked(lks) && !sixLocked(lks)
-							&& !isLocked(lks) && !ixLocked(lks)
-							&& lks.requestSet.isEmpty())
-						lockerMap.remove(obj);
-				}
+	synchronized void release(Object obj, long txNum, int lockType) {
+		Lockers lks = lockerMap.get(obj);
+		if (lks == null)
+			return;
+		switch (lockType) {
+		case X_LOCK:
+			if (lks.xLocker == txNum) {
+				lks.xLocker = -1;
+				notifyAll();
 			}
+			return;
+		case SIX_LOCK:
+			if (lks.sixLocker == txNum) {
+				lks.sixLocker = -1;
+				notifyAll();
+			}
+			return;
+		case S_LOCK:
+			Set<Long> sl = lks.sLockers;
+			if (sl != null && sl.contains(txNum)) {
+				sl.remove((Long) txNum);
+				if (sl.isEmpty())
+					notifyAll();
+			}
+			return;
+		case IS_LOCK:
+			Set<Long> isl = lks.isLockers;
+			if (isl != null && isl.contains(txNum)) {
+				isl.remove((Long) txNum);
+				if (isl.isEmpty())
+					notifyAll();
+			}
+			return;
+		case IX_LOCK:
+			Set<Long> ixl = lks.ixLockers;
+			if (ixl != null && ixl.contains(txNum)) {
+				ixl.remove((Long) txNum);
+				if (ixl.isEmpty())
+					notifyAll();
+			}
+			return;
+		default:
+			throw new IllegalArgumentException();
 		}
 	}
 
@@ -422,90 +367,30 @@ class LockTable {
 	 * @param sLockOnly
 	 *            release slocks only
 	 */
-	void releaseAll(long txNum, boolean sLockOnly) {
-		Set<Object> objectsToRelease = getObjectSet(txNum);
-		for (Object obj : objectsToRelease) {
-			Object anchor = getAnchor(obj);
-			synchronized (anchor) {
-				Lockers lks = lockerMap.get(obj);
+	synchronized void releaseAll(long txNum, boolean sLockOnly) {
+		List<Object> released = new LinkedList<Object>();
+		for (Object obj : lockerMap.keySet()) {
+			if (hasSLock(obj, txNum))
+				release(obj, txNum, S_LOCK);
 
-				if (lks != null) {
+			if (hasXLock(obj, txNum) && !sLockOnly)
+				release(obj, txNum, X_LOCK);
 
-					if (hasSLock(lks, txNum))
-						releaseLock(lks, anchor, txNum, S_LOCK);
+			if (hasSixLock(obj, txNum))
+				release(obj, txNum, SIX_LOCK);
 
-					if (hasXLock(lks, txNum) && !sLockOnly)
-						releaseLock(lks, anchor, txNum, X_LOCK);
+			while (hasIsLock(obj, txNum))
+				release(obj, txNum, IS_LOCK);
 
-					if (hasSixLock(lks, txNum))
-						releaseLock(lks, anchor, txNum, SIX_LOCK);
+			while (hasIxLock(obj, txNum) && !sLockOnly)
+				release(obj, txNum, IX_LOCK);
 
-					while (hasIsLock(lks, txNum))
-						releaseLock(lks, anchor, txNum, IS_LOCK);
-
-					while (hasIxLock(lks, txNum) && !sLockOnly)
-						releaseLock(lks, anchor, txNum, IX_LOCK);
-
-					// Remove the locker, if there is no other transaction
-					// having it
-					if (!sLocked(lks) && !xLocked(lks) && !sixLocked(lks)
-							&& !isLocked(lks) && !ixLocked(lks)
-							&& lks.requestSet.isEmpty())
-						lockerMap.remove(obj);
-				}
-			}
+			if (!sLocked(obj) && !xLocked(obj) && !sixLocked(obj)
+					&& !isLocked(obj) && !ixLocked(obj))
+				released.add(obj);
 		}
-		txWaitMap.remove(txNum);
-		txnsToBeAborted.remove(txNum);
-		lockByMap.remove(txNum);
-	}
-
-	private void releaseLock(Lockers lks, Object anchor, long txNum,
-			int lockType) {
-		if (lks == null)
-			return;
-		anchor.notifyAll();
-		switch (lockType) {
-		case X_LOCK:
-			if (lks.xLocker == txNum) {
-				lks.xLocker = -1;
-				
-				anchor.notifyAll();
-			}
-			return;
-		case SIX_LOCK:
-			if (lks.sixLocker == txNum) {
-				lks.sixLocker = -1;
-				
-				anchor.notifyAll();
-			}
-			return;
-		case S_LOCK:
-			Set<Long> sl = lks.sLockers;
-			if (sl != null && sl.contains(txNum)) {
-				sl.remove((Long) txNum);
-				if (sl.isEmpty())
-					anchor.notifyAll();
-			}
-			return;
-		case IS_LOCK:
-			Set<Long> isl = lks.isLockers;
-			if (isl != null && isl.contains(txNum)) {
-				isl.remove((Long) txNum);
-				if (isl.isEmpty())
-					anchor.notifyAll();
-			}
-			return;
-		case IX_LOCK:
-			Set<Long> ixl = lks.ixLockers;
-			if (ixl != null && ixl.contains(txNum)) {
-				ixl.remove((Long) txNum);
-				if (ixl.isEmpty())
-					anchor.notifyAll();
-			}
-			return;
-		default:
-			throw new IllegalArgumentException();
+		for (Object obj : released) {
+			lockerMap.remove(obj);
 		}
 	}
 
@@ -518,15 +403,6 @@ class LockTable {
 		return lockers;
 	}
 
-	private Set<Object> getObjectSet(long txNum) {
-		Set<Object> objectSet = lockByMap.get(txNum);
-		if (objectSet == null) {
-			objectSet = new HashSet<Object>();
-			lockByMap.put(txNum, objectSet);
-		}
-		return objectSet;
-	}
-
 	private boolean waitingTooLong(long starttime) {
 		return System.currentTimeMillis() - starttime + EPSILON > MAX_TIME;
 	}
@@ -535,23 +411,28 @@ class LockTable {
 	 * Verify if an item is locked.
 	 */
 
-	private boolean sLocked(Lockers lks) {
+	private boolean sLocked(Object obj) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.sLockers.size() > 0;
 	}
 
-	private boolean xLocked(Lockers lks) {
+	private boolean xLocked(Object obj) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.xLocker != -1;
 	}
 
-	private boolean sixLocked(Lockers lks) {
+	private boolean sixLocked(Object obj) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.sixLocker != -1;
 	}
 
-	private boolean isLocked(Lockers lks) {
+	private boolean isLocked(Object obj) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.isLockers.size() > 0;
 	}
 
-	private boolean ixLocked(Lockers lks) {
+	private boolean ixLocked(Object obj) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.ixLockers.size() > 0;
 	}
 
@@ -559,73 +440,91 @@ class LockTable {
 	 * Verify if an item is held by a tx.
 	 */
 
-	private boolean hasSLock(Lockers lks, long txNum) {
+	private boolean hasSLock(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.sLockers.contains(txNum);
 	}
 
-	private boolean hasXLock(Lockers lks, long txNUm) {
+	private boolean hasXLock(Object obj, long txNUm) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.xLocker == txNUm;
 	}
 
-	private boolean hasSixLock(Lockers lks, long txNum) {
+	private boolean hasSixLock(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.sixLocker == txNum;
 	}
 
-	private boolean hasIsLock(Lockers lks, long txNum) {
+	private boolean hasIsLock(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.isLockers.contains(txNum);
 	}
 
-	private boolean hasIxLock(Lockers lks, long txNum) {
+	private boolean hasIxLock(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.ixLockers.contains(txNum);
 	}
 
-	private boolean isTheOnlySLocker(Lockers lks, long txNum) {
+	private boolean isTheOnlySLocker(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
 		return lks != null && lks.sLockers.size() == 1
 				&& lks.sLockers.contains(txNum);
 	}
 
-	private boolean isTheOnlyIsLocker(Lockers lks, long txNum) {
-		return lks != null && lks.isLockers.size() == 1
-				&& lks.isLockers.contains(txNum);
+	private boolean isTheOnlyIsLocker(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
+		if (lks != null) {
+			for (Object o : lks.isLockers)
+				if (!o.equals(txNum))
+					return false;
+			return true;
+		}
+		return false;
 	}
 
-	private boolean isTheOnlyIxLocker(Lockers lks, long txNum) {
-		return lks != null && lks.ixLockers.size() == 1
-				&& lks.ixLockers.contains(txNum);
+	private boolean isTheOnlyIxLocker(Object obj, long txNum) {
+		Lockers lks = lockerMap.get(obj);
+		if (lks != null) {
+			for (Object o : lks.ixLockers)
+				if (!o.equals(txNum))
+					return false;
+			return true;
+		}
+		return false;
 	}
 
 	/*
 	 * Verify if an item is lockable to a tx.
 	 */
 
-	private boolean sLockable(Lockers lks, long txNum) {
-		return (!xLocked(lks) || hasXLock(lks, txNum))
-				&& (!sixLocked(lks) || hasSixLock(lks, txNum))
-				&& (!ixLocked(lks) || isTheOnlyIxLocker(lks, txNum));
+	private boolean sLockable(Object obj, long txNum) {
+		return (!xLocked(obj) || hasXLock(obj, txNum))
+				&& (!sixLocked(obj) || hasSixLock(obj, txNum))
+				&& (!ixLocked(obj) || isTheOnlyIxLocker(obj, txNum));
 	}
 
-	private boolean xLockable(Lockers lks, long txNum) {
-		return (!sLocked(lks) || isTheOnlySLocker(lks, txNum))
-				&& (!sixLocked(lks) || hasSixLock(lks, txNum))
-				&& (!ixLocked(lks) || isTheOnlyIxLocker(lks, txNum))
-				&& (!isLocked(lks) || isTheOnlyIsLocker(lks, txNum))
-				&& (!xLocked(lks) || hasXLock(lks, txNum));
+	private boolean xLockable(Object obj, long txNum) {
+		return (!sLocked(obj) || isTheOnlySLocker(obj, txNum))
+				&& (!sixLocked(obj) || hasSixLock(obj, txNum))
+				&& (!ixLocked(obj) || isTheOnlyIxLocker(obj, txNum))
+				&& (!isLocked(obj) || isTheOnlyIsLocker(obj, txNum))
+				&& (!xLocked(obj) || hasXLock(obj, txNum));
 	}
 
-	private boolean sixLockable(Lockers lks, long txNum) {
-		return (!sixLocked(lks) || hasSixLock(lks, txNum))
-				&& (!ixLocked(lks) || isTheOnlyIxLocker(lks, txNum))
-				&& (!sLocked(lks) || isTheOnlySLocker(lks, txNum))
-				&& (!xLocked(lks) || hasXLock(lks, txNum));
+	private boolean sixLockable(Object obj, long txNum) {
+		return (!sixLocked(obj) || hasSixLock(obj, txNum))
+				&& (!ixLocked(obj) || isTheOnlyIxLocker(obj, txNum))
+				&& (!sLocked(obj) || isTheOnlySLocker(obj, txNum))
+				&& (!xLocked(obj) || hasXLock(obj, txNum));
 	}
 
-	private boolean ixLockable(Lockers lks, long txNum) {
-		return (!sLocked(lks) || isTheOnlySLocker(lks, txNum))
-				&& (!sixLocked(lks) || hasSixLock(lks, txNum))
-				&& (!xLocked(lks) || hasXLock(lks, txNum));
+	private boolean ixLockable(Object obj, long txNum) {
+		return (!sLocked(obj) || isTheOnlySLocker(obj, txNum))
+				&& (!sixLocked(obj) || hasSixLock(obj, txNum))
+				&& (!xLocked(obj) || hasXLock(obj, txNum));
 	}
 
-	private boolean isLockable(Lockers lks, long txNum) {
-		return (!xLocked(lks) || hasXLock(lks, txNum));
+	private boolean isLockable(Object obj, long txNum) {
+		return (!xLocked(obj) || hasXLock(obj, txNum));
 	}
 }
